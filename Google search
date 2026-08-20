@@ -1,0 +1,391 @@
+from googlesearch import search
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+import re
+
+
+# ---------------------------------------------------------
+# 1. GOOGLE SEARCH
+# ---------------------------------------------------------
+
+def web_search(query, limit=5):
+
+    results = search(
+        query,
+        num_results=limit,
+        advanced=True
+    )
+
+    return [
+        {
+            "title": r.title,
+            "url": r.url,
+            "snippet": r.description
+        }
+        for r in results
+    ]
+
+
+# ---------------------------------------------------------
+# 2. SCRAPING
+# ---------------------------------------------------------
+
+def scrape_page(url):
+
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/120 Safari/537.36"
+            )
+        }
+
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        # Remove unnecessary elements
+        for tag in soup([
+            "script",
+            "style",
+            "noscript"
+        ]):
+            tag.decompose()
+
+        # Page title
+        title = soup.title.string.strip() if soup.title else ""
+
+        # Meta description
+        meta_description = ""
+
+        meta = soup.find(
+            "meta",
+            attrs={"name": "description"}
+        )
+
+        if meta:
+            meta_description = meta.get(
+                "content",
+                ""
+            )
+
+        # Page text
+        text = soup.get_text(
+            separator=" ",
+            strip=True
+        )
+
+        # Limit text size
+        text = text[:5000]
+
+        return {
+            "title": title,
+            "description": meta_description,
+            "text": text,
+            "domain": urlparse(url).netloc
+        }
+
+    except Exception as e:
+
+        return {
+            "error": str(e)
+        }
+
+
+# ---------------------------------------------------------
+# 3. IDENTIFY PRODUCT
+# ---------------------------------------------------------
+
+def identify_product(product, scraped_data):
+
+    text = (
+        scraped_data.get("title", "") + " " +
+        scraped_data.get("description", "") + " " +
+        scraped_data.get("text", "")
+    )
+
+    text_lower = text.lower()
+    product_lower = product.lower()
+
+    # Check whether product exists on the page
+    product_found = product_lower in text_lower
+
+    # Look for common product information
+    price = None
+
+    price_patterns = [
+        r'[$₹€£]\s?\d+(?:[.,]\d+)?',
+        r'\d+(?:[.,]\d+)?\s?(?:USD|INR|EUR|GBP)'
+    ]
+
+    for pattern in price_patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+            price = match.group()
+            break
+
+    # Extract possible brand
+    brand = None
+
+    brand_patterns = [
+        r'brand\s*[:\-]\s*([A-Za-z0-9 ._-]+)',
+        r'manufacturer\s*[:\-]\s*([A-Za-z0-9 ._-]+)'
+    ]
+
+    for pattern in brand_patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+            brand = match.group(1).strip()
+            break
+
+    return {
+        "product": product,
+        "product_found": product_found,
+        "brand": brand,
+        "price": price
+    }
+
+
+# ---------------------------------------------------------
+# 4. RECOGNISE RELEVANT RESULTS
+# ---------------------------------------------------------
+
+def recognise_result(product, search_result, product_data):
+
+    score = 0
+
+    product_lower = product.lower()
+
+    title = search_result.get(
+        "title",
+        ""
+    ).lower()
+
+    snippet = search_result.get(
+        "snippet",
+        ""
+    ).lower()
+
+    domain = product_data.get(
+        "domain",
+        ""
+    )
+
+    # Product name in title
+    if product_lower in title:
+        score += 50
+
+    # Product name in snippet
+    if product_lower in snippet:
+        score += 30
+
+    # Product found in webpage
+    if product_data.get(
+        "product_found",
+        False
+    ):
+        score += 20
+
+    return {
+        "relevance_score": score,
+        "relevant": score >= 50,
+        "domain": domain
+    }
+
+
+# ---------------------------------------------------------
+# 5. COMPLETE GOOGLE SEARCH MODULE
+# ---------------------------------------------------------
+
+def google_product_module(product, limit=5):
+
+    print("\n========================================")
+    print("       GOOGLE PRODUCT SEARCH")
+    print("========================================")
+
+    print(f"\nProduct: {product}")
+
+    # STEP 1 - Search
+    print("\n[1] Searching Google...")
+
+    search_results = web_search(
+        product,
+        limit
+    )
+
+    final_results = []
+
+    # STEP 2 - Process each result
+    for index, result in enumerate(
+        search_results,
+        start=1
+    ):
+
+        print(
+            f"\n[{index}] {result['title']}"
+        )
+
+        print(
+            f"URL: {result['url']}"
+        )
+
+        # STEP 3 - Scrape
+        print("Scraping webpage...")
+
+        scraped_data = scrape_page(
+            result["url"]
+        )
+
+        if "error" in scraped_data:
+
+            print(
+                f"Scraping failed: "
+                f"{scraped_data['error']}"
+            )
+
+            continue
+
+        # STEP 4 - Identify
+        print("Identifying product...")
+
+        product_data = identify_product(
+            product,
+            scraped_data
+        )
+
+        # STEP 5 - Recognise
+        print("Recognising relevance...")
+
+        recognition = recognise_result(
+            product,
+            result,
+            product_data
+        )
+
+        # Combine everything
+        final_result = {
+            "title": result["title"],
+            "url": result["url"],
+            "snippet": result["snippet"],
+            "domain": scraped_data.get(
+                "domain"
+            ),
+            "page_title": scraped_data.get(
+                "title"
+            ),
+            "product": product_data.get(
+                "product"
+            ),
+            "product_found": product_data.get(
+                "product_found"
+            ),
+            "brand": product_data.get(
+                "brand"
+            ),
+            "price": product_data.get(
+                "price"
+            ),
+            "relevance_score": recognition.get(
+                "relevance_score"
+            ),
+            "relevant": recognition.get(
+                "relevant"
+            )
+        }
+
+        final_results.append(
+            final_result
+        )
+
+    return final_results
+
+
+# ---------------------------------------------------------
+# 6. MAIN PROGRAM
+# ---------------------------------------------------------
+
+if __name__ == "__main__":
+
+    product = input(
+        "Enter product name: "
+    )
+
+    results = google_product_module(
+        product,
+        limit=5
+    )
+
+    print("\n\n========================================")
+    print("              FINAL RESULTS")
+    print("========================================")
+
+    for result in results:
+
+        print("\n----------------------------------------")
+
+        print(
+            "Product:",
+            result["product"]
+        )
+
+        print(
+            "Title:",
+            result["title"]
+        )
+
+        print(
+            "URL:",
+            result["url"]
+        )
+
+        print(
+            "Domain:",
+            result["domain"]
+        )
+
+        print(
+            "Product Found:",
+            result["product_found"]
+        )
+
+        print(
+            "Brand:",
+            result["brand"]
+        )
+
+        print(
+            "Price:",
+            result["price"]
+        )
+
+        print(
+            "Relevance Score:",
+            result["relevance_score"]
+        )
+
+        print(
+            "Relevant:",
+            result["relevant"]
+        )
